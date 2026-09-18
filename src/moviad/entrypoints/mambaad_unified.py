@@ -46,7 +46,7 @@ class MambaADUnifiedArgs:
 
 
 def _cache_train_features(model: MambaAD, dataset, device: torch.device, batch_size: int) -> TensorDataset:
-    loader = DataLoader(dataset, batch_size=batch_size, shuffle=False, num_workers=4)
+    loader = DataLoader(dataset, batch_size=batch_size, shuffle=False, num_workers=0)
     per_scale_features = None
     model.eval()
     for images in tqdm(loader, desc="Caching train features"):
@@ -60,7 +60,7 @@ def _cache_train_features(model: MambaAD, dataset, device: torch.device, batch_s
 
 
 def _cache_test_features(model: MambaAD, dataset, device: torch.device, batch_size: int) -> TensorDataset:
-    loader = DataLoader(dataset, batch_size=batch_size, shuffle=False, num_workers=4)
+    loader = DataLoader(dataset, batch_size=batch_size, shuffle=False, num_workers=0)
     per_scale_features, labels, masks = None, [], []
     model.eval()
     for images, label, mask, _path in tqdm(loader, desc="Caching test features"):
