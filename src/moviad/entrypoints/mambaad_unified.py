@@ -16,7 +16,7 @@ from moviad.datasets.dataset_arguments import DatasetArguments
 from moviad.datasets.mvtec.mvtec_dataset import MVTecDataset
 from moviad.models.mambaad.mambaad import MambaAD, MambaADTrainArgs
 from moviad.utilities.configurations import Split
-from moviad.utilities.evaluation.metrics import RocAuc, MetricLvl
+from moviad.utilities.evaluation.metrics import RocAuc, AvgPrec, F1, ProAuc, MetricLvl
 
 
 def _min_max_norm(x: np.ndarray) -> np.ndarray:
@@ -151,11 +151,17 @@ def train_mambaad_unified(args: MambaADUnifiedArgs, logger=None) -> Tuple[Dict[s
     if logger is not None:
         logger.config.update(train_args.__to_dict__())
 
-    metrics = [RocAuc(MetricLvl.IMAGE), RocAuc(MetricLvl.PIXEL)]
+    metrics = [
+        RocAuc(MetricLvl.IMAGE), AvgPrec(MetricLvl.IMAGE), F1(MetricLvl.IMAGE),
+        RocAuc(MetricLvl.PIXEL), AvgPrec(MetricLvl.PIXEL), F1(MetricLvl.PIXEL), ProAuc(MetricLvl.PIXEL),
+    ]
 
     def evaluate_all_categories(epoch: int):
         per_category = {c: _evaluate_from_cache(model, loader, metrics, args.device) for c, loader in test_loaders.items()}
+        for report in per_category.values():
+            report["mAD"] = float(np.mean(list(report.values())))
         mean_metrics = {m.name: float(np.mean([per_category[c][m.name] for c in categories])) for m in metrics}
+        mean_metrics["mAD"] = float(np.mean(list(mean_metrics.values())))
         if logger is not None:
             log_dict = {f"{c}/{k}": v for c, r in per_category.items() for k, v in r.items()}
             log_dict.update({f"mean/{k}": v for k, v in mean_metrics.items()})
