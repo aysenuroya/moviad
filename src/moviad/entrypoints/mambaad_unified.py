@@ -174,6 +174,7 @@ def train_mambaad_unified(args: MambaADUnifiedArgs, logger=None) -> Tuple[Dict[s
 
         if logger is not None:
             logger.log({"epoch": epoch, "train_loss": avg_loss})
+        print(f"[epoch {epoch}] train_loss={avg_loss:.5f}")
 
         if (epoch + 1) % args.eval_every == 0 or epoch == args.epochs - 1:
             _, mean_metrics = evaluate_all_categories(epoch)
