@@ -52,7 +52,7 @@ class SelectiveScan(nn.Module):
 
     def forward(self, x: torch.Tensor, dt: torch.Tensor, A: torch.Tensor,
                 B: torch.Tensor, C: torch.Tensor, D: torch.Tensor) -> torch.Tensor:
-        return selective_scan_fn(x, dt.to(x.dtype), A.float(), B.float(), C.float(), D.float())
+        return selective_scan_fn(x, dt.to(x.dtype), A.float(), B.to(x.dtype), C.to(x.dtype), D.float())
 
 
 class SS2D(nn.Module):
