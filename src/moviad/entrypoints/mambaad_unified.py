@@ -39,6 +39,7 @@ class MambaADUnifiedArgs:
     lr: float = 5e-3
     weight_decay: float = 1e-4
     loss_weight: float = 5.0
+    use_amp: bool = True
     eval_every: int = 10
     cache_batch_size: int = 16
     device: torch.device = None
@@ -143,6 +144,7 @@ def train_mambaad_unified(args: MambaADUnifiedArgs, logger=None) -> Tuple[Dict[s
         lr=args.lr,
         weight_decay=args.weight_decay,
         loss_weight=args.loss_weight,
+        use_amp=args.use_amp,
     )
     train_args.init_train(model)
 
