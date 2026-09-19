@@ -15,6 +15,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.utils.checkpoint as checkpoint
 
+from mamba_ssm.ops.selective_scan_interface import selective_scan_fn
+
 
 def _hilbert_xy_from_d(order: int, d: int):
     x, y = 0, 0
@@ -47,50 +49,10 @@ class SelectiveScan(nn.Module):
 
     def __init__(self, chunk_size: int = 256):
         super().__init__()
-        self.chunk_size = chunk_size
-
-    @staticmethod
-    def _scan_chunk(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
-        L = a.shape[-1]
-        d = 1
-        while d < L:
-            a_shift = F.pad(a[..., :-d], (d, 0), value=1.0)
-            b_shift = F.pad(b[..., :-d], (d, 0), value=0.0)
-            b = a * b_shift + b
-            a = a * a_shift
-            d *= 2
-        return b
 
     def forward(self, x: torch.Tensor, dt: torch.Tensor, A: torch.Tensor,
                 B: torch.Tensor, C: torch.Tensor, D: torch.Tensor) -> torch.Tensor:
-        L = x.shape[-1]
-        chunk = self.chunk_size
-
-        h_carry = None
-        ys = []
-        for start in range(0, L, chunk):
-            end = min(start + chunk, L)
-            dt_c = dt[:, :, start:end]
-            x_c = x[:, :, start:end]
-            B_c = B[:, :, start:end]
-            C_c = C[:, :, start:end]
-
-            deltaA_c = torch.exp(dt_c[:, :, None, :] * A[None, :, :, None])
-            deltaB_x_c = dt_c[:, :, None, :] * B_c[:, None, :, :] * x_c[:, :, None, :]
-
-            if h_carry is not None:
-                carry_term = deltaA_c[..., 0] * h_carry
-                deltaB_x_c = torch.cat(
-                    [deltaB_x_c[..., :1] + carry_term[..., None], deltaB_x_c[..., 1:]], dim=-1
-                )
-
-            h_c = self._scan_chunk(deltaA_c, deltaB_x_c)
-            ys.append(torch.einsum("bdnl,bnl->bdl", h_c, C_c))
-            h_carry = h_c[..., -1]
-
-        y = torch.cat(ys, dim=-1)
-        y = y + x * D[None, :, None]
-        return y
+        return selective_scan_fn(x, dt.to(x.dtype), A.float(), B.to(x.dtype), C.to(x.dtype), D.float())
 
 
 class SS2D(nn.Module):

@@ -16,7 +16,7 @@ from moviad.datasets.dataset_arguments import DatasetArguments
 from moviad.datasets.mvtec.mvtec_dataset import MVTecDataset
 from moviad.models.mambaad.mambaad import MambaAD, MambaADTrainArgs
 from moviad.utilities.configurations import Split
-from moviad.utilities.evaluation.metrics import RocAuc, MetricLvl
+from moviad.utilities.evaluation.metrics import RocAuc, AvgPrec, F1, ProAuc, MetricLvl
 
 
 def _min_max_norm(x: np.ndarray) -> np.ndarray:
@@ -39,6 +39,7 @@ class MambaADUnifiedArgs:
     lr: float = 5e-3
     weight_decay: float = 1e-4
     loss_weight: float = 5.0
+    use_amp: bool = True
     eval_every: int = 10
     cache_batch_size: int = 16
     device: torch.device = None
@@ -46,7 +47,7 @@ class MambaADUnifiedArgs:
 
 
 def _cache_train_features(model: MambaAD, dataset, device: torch.device, batch_size: int) -> TensorDataset:
-    loader = DataLoader(dataset, batch_size=batch_size, shuffle=False, num_workers=4)
+    loader = DataLoader(dataset, batch_size=batch_size, shuffle=False, num_workers=0)
     per_scale_features = None
     model.eval()
     for images in tqdm(loader, desc="Caching train features"):
@@ -60,7 +61,7 @@ def _cache_train_features(model: MambaAD, dataset, device: torch.device, batch_s
 
 
 def _cache_test_features(model: MambaAD, dataset, device: torch.device, batch_size: int) -> TensorDataset:
-    loader = DataLoader(dataset, batch_size=batch_size, shuffle=False, num_workers=4)
+    loader = DataLoader(dataset, batch_size=batch_size, shuffle=False, num_workers=0)
     per_scale_features, labels, masks = None, [], []
     model.eval()
     for images, label, mask, _path in tqdm(loader, desc="Caching test features"):
@@ -143,17 +144,24 @@ def train_mambaad_unified(args: MambaADUnifiedArgs, logger=None) -> Tuple[Dict[s
         lr=args.lr,
         weight_decay=args.weight_decay,
         loss_weight=args.loss_weight,
+        use_amp=args.use_amp,
     )
     train_args.init_train(model)
 
     if logger is not None:
         logger.config.update(train_args.__to_dict__())
 
-    metrics = [RocAuc(MetricLvl.IMAGE), RocAuc(MetricLvl.PIXEL)]
+    metrics = [
+        RocAuc(MetricLvl.IMAGE), AvgPrec(MetricLvl.IMAGE), F1(MetricLvl.IMAGE),
+        RocAuc(MetricLvl.PIXEL), AvgPrec(MetricLvl.PIXEL), F1(MetricLvl.PIXEL), ProAuc(MetricLvl.PIXEL),
+    ]
 
     def evaluate_all_categories(epoch: int):
         per_category = {c: _evaluate_from_cache(model, loader, metrics, args.device) for c, loader in test_loaders.items()}
+        for report in per_category.values():
+            report["mAD"] = float(np.mean(list(report.values())))
         mean_metrics = {m.name: float(np.mean([per_category[c][m.name] for c in categories])) for m in metrics}
+        mean_metrics["mAD"] = float(np.mean(list(mean_metrics.values())))
         if logger is not None:
             log_dict = {f"{c}/{k}": v for c, r in per_category.items() for k, v in r.items()}
             log_dict.update({f"mean/{k}": v for k, v in mean_metrics.items()})
@@ -174,6 +182,7 @@ def train_mambaad_unified(args: MambaADUnifiedArgs, logger=None) -> Tuple[Dict[s
 
         if logger is not None:
             logger.log({"epoch": epoch, "train_loss": avg_loss})
+        print(f"[epoch {epoch}] train_loss={avg_loss:.5f}")
 
         if (epoch + 1) % args.eval_every == 0 or epoch == args.epochs - 1:
             _, mean_metrics = evaluate_all_categories(epoch)

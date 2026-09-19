@@ -117,6 +117,8 @@ class MambaAD(VADModel):
 
         training_args.optimizer.zero_grad()
         training_args.scaler.scale(loss).backward()
+        training_args.scaler.unscale_(training_args.optimizer)
+        torch.nn.utils.clip_grad_norm_(self.parameters(), max_norm=1.0)
         training_args.scaler.step(training_args.optimizer)
         training_args.scaler.update()
 
