@@ -38,6 +38,7 @@ class DiADConfig:
     ddim_steps: int = 10
     start_timestep: int = 999
     only_mid_control: bool = True
+    train_unet_decoder: bool = True
     train_middle: bool = False
     use_checkpoint: bool = True
     feature_extractor_name: str = "resnet50"
@@ -157,9 +158,10 @@ class DiAD(VADModel):
         for p in self.parameters():
             p.requires_grad_(False)
         trainable = list(self.sg.parameters())
-        trainable += list(self.unet.up_blocks.parameters())
-        trainable += list(self.unet.conv_norm_out.parameters())
-        trainable += list(self.unet.conv_out.parameters())
+        if self.config.train_unet_decoder:
+            trainable += list(self.unet.up_blocks.parameters())
+            trainable += list(self.unet.conv_norm_out.parameters())
+            trainable += list(self.unet.conv_out.parameters())
         if self.config.train_middle:
             trainable += list(self.unet.mid_block.parameters())
         for p in trainable:
