@@ -40,7 +40,16 @@ def empty_prompt_embedding(state_dict: Dict[str, torch.Tensor]) -> torch.Tensor:
         hidden_act="quick_gelu",
     )
     text_model = CLIPTextModel(config).eval()
-    clip_state = {k[len(CLIP_PREFIX):]: v for k, v in state_dict.items() if k.startswith(CLIP_PREFIX)}
+    model_keys = set(text_model.state_dict())
+    clip_state = {}
+    for key, value in state_dict.items():
+        if not key.startswith(CLIP_PREFIX):
+            continue
+        name = key[len(CLIP_PREFIX):]
+        for candidate in (name, name.removeprefix("text_model."), "text_model." + name):
+            if candidate in model_keys:
+                clip_state[candidate] = value
+                break
     missing, unexpected = text_model.load_state_dict(clip_state, strict=False)
     missing = [k for k in missing if not k.endswith("position_ids")]
     unexpected = [k for k in unexpected if not k.endswith("position_ids")]
