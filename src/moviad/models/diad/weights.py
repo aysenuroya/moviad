@@ -7,6 +7,8 @@ Code adapted from:
     License: Apache-2.0
 """
 
+import pickle
+import types
 from pathlib import Path
 from typing import Dict, Optional
 
@@ -20,12 +22,44 @@ CLIP_PREFIX = "cond_stage_model.transformer."
 EMPTY_PROMPT_IDS = [49406] + [49407] * 76
 
 
+class _Ignored:
+    def __init__(self, *args, **kwargs):
+        pass
+
+    def __setstate__(self, state):
+        pass
+
+
+_ALLOWED_GLOBALS = {
+    ("collections", "OrderedDict"),
+    ("torch._utils", "_rebuild_tensor_v2"),
+    ("torch._utils", "_rebuild_parameter"),
+}
+
+
+class _RestrictedUnpickler(pickle.Unpickler):
+    def find_class(self, module, name):
+        if (module, name) in _ALLOWED_GLOBALS:
+            return super().find_class(module, name)
+        return _Ignored
+
+
+_restricted_pickle = types.ModuleType("restricted_pickle")
+_restricted_pickle.Unpickler = _RestrictedUnpickler
+_restricted_pickle.UnpicklingError = pickle.UnpicklingError
+_restricted_pickle.load = pickle.load
+
+
 def read_state_dict(path: str) -> Dict[str, torch.Tensor]:
     if Path(path).suffix == ".safetensors":
         from safetensors.torch import load_file
 
         return load_file(path, device="cpu")
-    state = torch.load(path, map_location="cpu", weights_only=True)
+    try:
+        state = torch.load(path, map_location="cpu", weights_only=True)
+    except pickle.UnpicklingError:
+        print(f"{path} contains non-tensor objects, loading tensors only with a restricted unpickler")
+        state = torch.load(path, map_location="cpu", pickle_module=_restricted_pickle, weights_only=False)
     return state.get("state_dict", state)
 
 

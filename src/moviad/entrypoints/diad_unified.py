@@ -4,12 +4,14 @@ DiAD "unified case" reproduction entrypoint for MoViAD.
 
 import gc
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import torch
-from torch.utils.data import ConcatDataset, DataLoader
+from torch.utils.data import ConcatDataset, DataLoader, Dataset
 from torchvision import transforms
+from tqdm import tqdm
 
 from moviad.datasets.dataset_arguments import DatasetArguments
 from moviad.datasets.mvtec.mvtec_dataset import MVTecDataset
@@ -21,6 +23,18 @@ from moviad.utilities.evaluation.metrics import RocAuc, AvgPrec, F1, ProAuc, Met
 
 def _min_max_norm(x: np.ndarray) -> np.ndarray:
     return (x - x.min()) / (x.max() - x.min())
+
+
+class _CachedDataset(Dataset):
+
+    def __init__(self, dataset: Dataset):
+        self.items = [dataset[i] for i in tqdm(range(len(dataset)), desc="Caching dataset", leave=False)]
+
+    def __len__(self) -> int:
+        return len(self.items)
+
+    def __getitem__(self, index: int):
+        return self.items[index]
 
 
 @dataclass
@@ -41,6 +55,21 @@ class DiADUnifiedArgs:
     num_workers: int = 0
     device: torch.device = None
     save_path: Optional[str] = None
+    checkpoint_dir: Optional[str] = None
+    checkpoint_every: int = 5
+    keep_checkpoints: int = 2
+    resume: bool = True
+    cache_dataset: bool = False
+    tf32: bool = False
+
+
+def _checkpoint_files(directory: str) -> List[Path]:
+    return sorted(Path(directory).glob("diad_epoch_*.pt"))
+
+
+def _prune_checkpoints(directory: str, keep: int):
+    for old in _checkpoint_files(directory)[:-keep]:
+        old.unlink()
 
 
 def _evaluate(model: DiAD, dataloader: DataLoader, metrics, device: torch.device) -> dict:
@@ -79,16 +108,24 @@ def train_diad_unified(args: DiADUnifiedArgs, logger=None) -> Tuple[Dict[str, di
         ],
     )
 
+    if args.tf32:
+        torch.backends.cuda.matmul.allow_tf32 = True
+        torch.backends.cudnn.allow_tf32 = True
+        torch.set_float32_matmul_precision("high")
+
+    def maybe_cache(dataset: Dataset) -> Dataset:
+        return _CachedDataset(dataset) if args.cache_dataset else dataset
+
     train_datasets = [MVTecDataset(dataset_args, category=c, split=Split.TRAIN) for c in categories]
     train_loader = DataLoader(
-        ConcatDataset(train_datasets),
+        maybe_cache(ConcatDataset(train_datasets)),
         batch_size=args.batch_size,
         shuffle=True,
         num_workers=args.num_workers,
     )
     test_loaders = {
         c: DataLoader(
-            MVTecDataset(dataset_args, category=c, split=Split.TEST),
+            maybe_cache(MVTecDataset(dataset_args, category=c, split=Split.TEST)),
             batch_size=args.test_batch_size,
             shuffle=False,
             num_workers=args.num_workers,
@@ -133,13 +170,25 @@ def train_diad_unified(args: DiADUnifiedArgs, logger=None) -> Tuple[Dict[str, di
             logger.log(log_dict)
         return per_category, mean_metrics
 
-    for epoch in range(args.epochs):
+    start_epoch = 0
+    if args.checkpoint_dir is not None:
+        Path(args.checkpoint_dir).mkdir(parents=True, exist_ok=True)
+        existing = _checkpoint_files(args.checkpoint_dir)
+        if args.resume and existing:
+            start_epoch = model.load_checkpoint(str(existing[-1]), train_args.optimizer)
+            print(f"Resuming training from epoch {start_epoch}")
+
+    for epoch in range(start_epoch, args.epochs):
         model.train()
         avg_loss = model.train_epoch(epoch, train_loader, train_args)
 
         if logger is not None:
             logger.log({"epoch": epoch, "train_loss": avg_loss})
         print(f"[epoch {epoch}] train_loss={avg_loss:.5f}")
+
+        if args.checkpoint_dir is not None and ((epoch + 1) % args.checkpoint_every == 0 or epoch == args.epochs - 1):
+            model.save_checkpoint(str(Path(args.checkpoint_dir) / f"diad_epoch_{epoch + 1:05d}.pt"), epoch, train_args.optimizer)
+            _prune_checkpoints(args.checkpoint_dir, args.keep_checkpoints)
 
         if (epoch + 1) % args.eval_every == 0 and epoch != args.epochs - 1:
             _, mean_metrics = evaluate_all_categories(epoch)

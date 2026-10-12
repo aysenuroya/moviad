@@ -7,6 +7,7 @@ Code adapted from:
     License: Apache-2.0
 """
 
+import os
 from dataclasses import dataclass, field
 from typing import List, Optional, Tuple
 
@@ -285,3 +286,19 @@ class DiAD(VADModel):
     def load(self, path: str):
         self.load_state_dict(torch.load(path, map_location=self.device))
         print(f"Model loaded from: {path}")
+
+    def save_checkpoint(self, path: str, epoch: int, optimizer: torch.optim.Optimizer):
+        trainable = {n: p.detach().cpu() for n, p in self.named_parameters() if p.requires_grad}
+        temporary_path = f"{path}.tmp"
+        torch.save({"epoch": epoch, "trainable": trainable, "optimizer": optimizer.state_dict()}, temporary_path)
+        os.replace(temporary_path, path)
+        print(f"Checkpoint saved to: {path}")
+
+    def load_checkpoint(self, path: str, optimizer: torch.optim.Optimizer) -> int:
+        checkpoint = torch.load(path, map_location="cpu", weights_only=True)
+        _, unexpected = self.load_state_dict(checkpoint["trainable"], strict=False)
+        if unexpected:
+            raise KeyError(f"Checkpoint does not match the model: unexpected={unexpected[:5]}")
+        optimizer.load_state_dict(checkpoint["optimizer"])
+        print(f"Checkpoint loaded from: {path}")
+        return checkpoint["epoch"] + 1
