@@ -64,16 +64,18 @@ def _prune_checkpoints(directory: str, keep: int):
 
 def _cache_train_features(model: MambaAD, dataset, device: torch.device, batch_size: int) -> TensorDataset:
     loader = DataLoader(dataset, batch_size=batch_size, shuffle=False, num_workers=0)
-    per_scale_features = None
+    per_scale_features, start = None, 0
     model.eval()
     for images in tqdm(loader, desc="Caching train features"):
         with torch.no_grad():
             feats = model._extract_features(images.to(device))
         if per_scale_features is None:
-            per_scale_features = [[] for _ in feats]
-        for i, f in enumerate(feats):
-            per_scale_features[i].append(f.cpu())
-    return TensorDataset(*[torch.cat(f, dim=0) for f in per_scale_features])
+            # allocated once: collecting the batches and concatenating them at the end needs twice the memory
+            per_scale_features = [torch.empty((len(dataset), *f.shape[1:]), dtype=f.dtype) for f in feats]
+        for full, f in zip(per_scale_features, feats):
+            full[start:start + len(images)] = f.cpu()
+        start += len(images)
+    return TensorDataset(*per_scale_features)
 
 
 def _cache_test_features(model: MambaAD, dataset, device: torch.device, batch_size: int) -> TensorDataset:
