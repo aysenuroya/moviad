@@ -7,6 +7,7 @@ Code adapted from:
     License: (see original repository)
 """
 
+import os
 from dataclasses import dataclass
 from typing import List, Tuple
 
@@ -164,3 +165,29 @@ class MambaAD(VADModel):
     def load(self, path: str):
         self.load_state_dict(torch.load(path, map_location=self.device))
         print(f"Model loaded from: {path}")
+
+    def save_checkpoint(self, path: str, epoch: int, training_args: MambaADTrainArgs):
+        # the encoder is frozen and pretrained, so only the trained parts are stored
+        checkpoint = {
+            "epoch": epoch,
+            "bn": self.bn.state_dict(),
+            "decoder": self.decoder.state_dict(),
+            "optimizer": training_args.optimizer.state_dict(),
+            "scaler": training_args.scaler.state_dict(),
+        }
+        # write to a temporary file first, so an interrupted save does not leave a broken checkpoint
+        temporary_path = f"{path}.tmp"
+        torch.save(checkpoint, temporary_path)
+        os.replace(temporary_path, path)
+        print(f"Checkpoint saved to: {path}")
+
+    def load_checkpoint(self, path: str, training_args: MambaADTrainArgs) -> int:
+        checkpoint = torch.load(path, map_location="cpu", weights_only=True)
+        self.bn.load_state_dict(checkpoint["bn"])
+        self.decoder.load_state_dict(checkpoint["decoder"])
+        training_args.optimizer.load_state_dict(checkpoint["optimizer"])
+        # the scaler state is empty if the checkpoint was saved without mixed precision
+        if checkpoint["scaler"]:
+            training_args.scaler.load_state_dict(checkpoint["scaler"])
+        print(f"Checkpoint loaded from: {path}")
+        return checkpoint["epoch"] + 1

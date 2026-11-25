@@ -3,7 +3,9 @@ MambaAD "unified case" reproduction entrypoint for MoViAD.
 """
 
 import gc
+import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
@@ -44,6 +46,20 @@ class MambaADUnifiedArgs:
     cache_batch_size: int = 16
     device: torch.device = None
     save_path: Optional[str] = None
+    checkpoint_dir: Optional[str] = None
+    checkpoint_every: int = 5
+    keep_checkpoints: int = 2
+    resume: bool = True
+    max_hours: Optional[float] = None  # stop cleanly before a session time limit
+
+
+def _checkpoint_files(directory: str) -> List[Path]:
+    return sorted(Path(directory).glob("mambaad_epoch_*.pt"))
+
+
+def _prune_checkpoints(directory: str, keep: int):
+    for old in _checkpoint_files(directory)[:-keep]:
+        old.unlink()
 
 
 def _cache_train_features(model: MambaAD, dataset, device: torch.device, batch_size: int) -> TensorDataset:
@@ -103,6 +119,12 @@ def _evaluate_from_cache(model: MambaAD, dataloader: DataLoader, metrics, device
 
 
 def train_mambaad_unified(args: MambaADUnifiedArgs, logger=None) -> Tuple[Dict[str, dict], dict]:
+    start_time = time.time()
+    if args.max_hours is not None and args.checkpoint_dir is None:
+        raise ValueError("max_hours needs checkpoint_dir, otherwise the progress is lost when training stops")
+    if args.checkpoint_dir is not None and not args.resume and _checkpoint_files(args.checkpoint_dir):
+        raise ValueError(f"{args.checkpoint_dir} already has checkpoints: use resume=True or another directory")
+
     categories = args.categories or MVTecDataset.get_categories()
     dataset_args = DatasetArguments(
         dataset_path=args.dataset_path,
@@ -169,7 +191,22 @@ def train_mambaad_unified(args: MambaADUnifiedArgs, logger=None) -> Tuple[Dict[s
             logger.log(log_dict)
         return per_category, mean_metrics
 
-    for epoch in range(args.epochs):
+    def save_checkpoint(epoch: int):
+        path = Path(args.checkpoint_dir) / f"mambaad_epoch_{epoch + 1:05d}.pt"
+        model.save_checkpoint(str(path), epoch, train_args)
+        _prune_checkpoints(args.checkpoint_dir, args.keep_checkpoints)
+
+    start_epoch = 0
+    if args.checkpoint_dir is not None:
+        Path(args.checkpoint_dir).mkdir(parents=True, exist_ok=True)
+        existing = _checkpoint_files(args.checkpoint_dir)
+        if args.resume and existing:
+            start_epoch = model.load_checkpoint(str(existing[-1]), train_args)
+            print(f"Resuming training from epoch {start_epoch}")
+
+    longest_epoch_time = 0.0
+    for epoch in range(start_epoch, args.epochs):
+        epoch_start_time = time.time()
         model.train()
         avg_loss = 0.0
         for enc_batch in tqdm(train_loader, desc=f"Epoch {epoch}"):
@@ -184,9 +221,24 @@ def train_mambaad_unified(args: MambaADUnifiedArgs, logger=None) -> Tuple[Dict[s
             logger.log({"epoch": epoch, "train_loss": avg_loss})
         print(f"[epoch {epoch}] train_loss={avg_loss:.5f}")
 
+        # saved before the evaluation, so the epoch is not lost if the evaluation is interrupted
+        checkpoint_saved = args.checkpoint_dir is not None and (
+            (epoch + 1) % args.checkpoint_every == 0 or epoch == args.epochs - 1
+        )
+        if checkpoint_saved:
+            save_checkpoint(epoch)
+
         if (epoch + 1) % args.eval_every == 0 or epoch == args.epochs - 1:
             _, mean_metrics = evaluate_all_categories(epoch)
             print(f"[epoch {epoch}] loss={avg_loss:.5f} mean={mean_metrics}")
+
+        longest_epoch_time = max(longest_epoch_time, time.time() - epoch_start_time)
+        if args.max_hours is not None and epoch != args.epochs - 1:
+            if time.time() - start_time + longest_epoch_time > args.max_hours * 3600:
+                if not checkpoint_saved:
+                    save_checkpoint(epoch)
+                print(f"Time limit reached after {epoch + 1}/{args.epochs} epochs. Run again to resume.")
+                return {}, {}
 
     per_category, mean_metrics = evaluate_all_categories(args.epochs - 1)
 
